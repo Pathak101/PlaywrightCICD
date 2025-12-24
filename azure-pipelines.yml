@@ -1,21 +1,100 @@
-# Node.js
-# Build a general Node.js project with npm.
-# Add steps that analyze code, save build artifacts, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/languages/javascript
+# =========================================================
+# Playwright Validation + PROD Deployment Pipeline
+# =========================================================
 
-trigger:
-- main
+resources:
+  pipelines:
+  - pipeline: uiPipeline
+    source: Pathak101.AzureDevops_Practise   # UI pipeline name
+    trigger:
+      branches:
+        include:
+        - main
 
 pool:
   vmImage: ubuntu-latest
 
-steps:
-- task: NodeTool@0
-  inputs:
-    versionSpec: '20.x'
-  displayName: 'Install Node.js'
+variables:
+  DEV_APP_URL: https://siddharthpathak.azurewebsites.net
+  PROD_APP_NAME: prodSiddharthPathak
 
-- script: |
-    npm install
-    npm run build
-  displayName: 'npm install and build'
+stages:
+# =========================================================
+# STAGE 1 – PLAYWRIGHT VALIDATION (DEV)
+# =========================================================
+- stage: Playwright
+  displayName: Playwright Validation on DEV
+  jobs:
+  - job: RunPlaywrightTests
+    displayName: Run Playwright Tests
+    steps:
+
+    # ------------------------------
+    # Install Node.js (Playwright compatible)
+    # ------------------------------
+    - task: NodeTool@0
+      displayName: Install Node.js
+      inputs:
+        versionSpec: '20.x'
+
+    # ------------------------------
+    # Install dependencies & browsers
+    # ------------------------------
+    - script: |
+        npm ci
+        npx playwright install --with-deps
+      displayName: Install Playwright dependencies
+
+    # ------------------------------
+    # Run Playwright tests against DEV
+    # ------------------------------
+    - script: |
+        npx playwright test
+      displayName: Run Playwright Tests
+      env:
+        BASE_URL: $(DEV_APP_URL)
+
+    # ------------------------------
+    # Publish Playwright HTML Report
+    # ------------------------------
+    - task: PublishPipelineArtifact@1
+      displayName: Publish Playwright Report
+      inputs:
+        targetPath: playwright-report
+        artifact: playwright-report
+      condition: always()
+
+
+# =========================================================
+# STAGE 2 – PROD DEPLOYMENT (ONLY IF PLAYWRIGHT PASSES)
+# =========================================================
+- stage: PROD
+  displayName: Deploy to PROD
+  dependsOn: Playwright
+  condition: succeeded()     # 🔒 Playwright is the quality gate
+
+  jobs:
+  - deployment: DeployToProd
+    displayName: Deploy WAR to PROD
+    environment: prod        # enables approvals
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+
+          # ------------------------------
+          # Download WAR artifact from UI pipeline
+          # ------------------------------
+          - download: uiPipeline
+            artifact: warfile
+
+          # ------------------------------
+          # Deploy WAR to PROD App Service
+          # ------------------------------
+          - task: AzureWebApp@1
+            displayName: Deploy WAR to PROD
+            inputs:
+              azureSubscription: 'Azure subscription 1(3c7777d7-b743-402f-ad14-cf54579438cc)'
+              appType: 'webAppLinux'
+              appName: '$(PROD_APP_NAME)'
+              package: '$(Pipeline.Workspace)/uiPipeline/warfile/**/*.war'
